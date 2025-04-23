@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Mosaic Extension</title>
+  <style>
+    body {
+      width: 300px;
+      text-align: center;
+      font-family: sans-serif;
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 34px;
+    }
+    .switch input { 
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      -webkit-transition: .4s;
+      transition: .4s;
+      border-radius: 34px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 26px;
+      width: 26px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      -webkit-transition: .4s;
+      transition: .4s;
+      border-radius: 50%;
+    }
+    input:checked + .slider {
+      background-color: #2196F3;
+    }
+    input:focus + .slider {
+      box-shadow: 0 0 1px #2196F3;
+    }
+    input:checked + .slider:before {
+      -webkit-transform: translateX(26px);
+      -ms-transform: translateX(26px);
+      transform: translateX(26px);
+    }
+    #saved-mosaics-container {
+      margin-top: 15px;
+      padding-top: 10px;
+      border-top: 1px solid #ccc;
+      text-align: left;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    #saved-mosaics-container h4 {
+        margin-top: 0;
+        margin-bottom: 5px;
+        font-size: 0.9em;
+    }
+    ul#saved-mosaics-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+    ul#saved-mosaics-list li {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 5px 0;
+        font-size: 0.8em;
+        border-bottom: 1px solid #eee;
+    }
+    ul#saved-mosaics-list li:last-child {
+        border-bottom: none;
+    }
+    .url-text {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 200px;
+        margin-right: 5px;
+    }
+    .delete-button {
+        background-color: #ff4d4d;
+        color: white;
+        border: none;
+        padding: 3px 6px;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 0.9em;
+    }
+    .delete-button:hover {
+        background-color: #cc0000;
+    }
+    #no-saved-data {
+        color: #888;
+        font-size: 0.8em;
+        margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h3>モザイク機能</h3>
+  <label class="switch">
+    <input type="checkbox" id="toggleSwitch">
+    <span class="slider"></span>
+  </label>
+
+  <div id="preset-controls" style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #ccc; text-align: left; display: none;">
+      <h4>プリセット管理 (現在のタブ)</h4>
+      <div id="preset-selector-container" style="margin-bottom: 10px; display: flex; align-items: center; gap: 5px;">
+          <label for="preset-select" style="white-space: nowrap;">プリセット:</label>
+          <select id="preset-select" style="flex-grow: 1; min-width: 80px;"></select>
+          <button id="delete-preset-button" title="選択中のプリセットを削除" style="padding: 3px 6px; background-color: #ff4d4d; color: white; border: none; border-radius: 3px; cursor: pointer;">削除</button>
+      </div>
+      <div id="preset-actions-container" style="display: flex; align-items: center; gap: 5px;">
+          <input type="text" id="new-preset-name" placeholder="新規/上書きプリセット名" style="flex-grow: 1; padding: 4px;">
+          <button id="save-current-button" style="padding: 4px 8px; white-space: nowrap;">現在の状態を保存</button>
+          <!-- <button id="add-preset-button">空のプリセット追加</button> -->
+      </div>
+      <div id="preset-message" style="font-size: 0.8em; color: #888; margin-top: 5px; min-height: 1.2em;"></div>
+  </div>
+
+  <div id="saved-mosaics-container">
+      <h4>保存されたモザイク (全URL)</h4>
+      <ul id="saved-mosaics-list">
+          <!-- ここにJavaScriptでリスト項目が追加される -->
+      </ul>
+       <div id="no-saved-data" style="display: none;">保存されたデータはありません。</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html> 

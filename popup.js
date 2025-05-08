@@ -208,14 +208,25 @@ function handleDelete(url, listItem) {
     if (!confirm(`${url} に保存された全てのプリセットを削除しますか？`)) {
         return;
     }
-    chrome.storage.local.remove(url, () => {
+    chrome.storage.local.remove(url, async () => {
         if (chrome.runtime.lastError) {
-            console.error("Error removing data for ${url}:", chrome.runtime.lastError);
+            console.error(`Error removing data for ${url}:`, chrome.runtime.lastError);
             presetMessage.textContent = `${new URL(url).hostname} のデータ削除に失敗しました。`;
         } else {
             console.log(`Data for ${url} removed.`);
             presetMessage.textContent = ''; // エラーメッセージをクリア
             loadSavedMosaics(); // リストを再読み込みして表示を更新
+
+            // ★★★ 現在のタブが削除されたURLと一致する場合、モザイクをクリアするメッセージを送信 ★★★
+            try {
+                const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+                if (tabs[0] && tabs[0].url === url && tabs[0].id) {
+                    await chrome.tabs.sendMessage(tabs[0].id, { action: "clearMosaicsIfMatch", url: url });
+                    console.log(`Sent clearMosaicsIfMatch message to content script for ${url}`);
+                }
+            } catch (error) {
+                console.error("Error sending clearMosaicsIfMatch message:", error);
+            }
         }
     });
 }

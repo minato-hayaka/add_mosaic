@@ -131,7 +131,8 @@ function loadSavedMosaics() {
     // リストをクリア
     savedMosaicsList.innerHTML = '';
 
-    const urls = Object.keys(items);
+    const urls = Object.keys(items).filter(url => url.startsWith('http://') || url.startsWith('https://'));
+
 
     if (urls.length === 0) {
         noSavedDataElement.style.display = 'block'; // データがないメッセージを表示
@@ -141,30 +142,62 @@ function loadSavedMosaics() {
     }
 
     urls.forEach((url) => {
-      const mosaicData = items[url];
-      // URLが http または https で始まる場合のみリストに追加 (他のストレージデータを除外)
-      if (url.startsWith('http://') || url.startsWith('https://')) {
-          if (Array.isArray(mosaicData)) { // データが配列であることを確認
-              const listItem = document.createElement('li');
+      const mosaicDataContainer = items[url];
+      let displayInfo = "";
+      let mosaicsExist = false;
 
-              const urlSpan = document.createElement('span');
-              urlSpan.classList.add('url-text');
-              urlSpan.textContent = `${url} (${mosaicData.length}個)`; // モザイクの数も表示
-              urlSpan.title = url; // ホバーでフルURL表示
+      if (mosaicDataContainer && typeof mosaicDataContainer === 'object' && mosaicDataContainer.presets) {
+        // 新しいデータ構造
+        const presets = mosaicDataContainer.presets;
+        const presetNames = Object.keys(presets);
 
-              const deleteButton = document.createElement('button');
-              deleteButton.classList.add('delete-button');
-              deleteButton.textContent = '削除';
-              deleteButton.dataset.url = url; // 削除対象のURLをボタンに紐付け
-
-              deleteButton.addEventListener('click', () => {
-                handleDelete(url, listItem);
-              });
-
-              listItem.appendChild(urlSpan);
-              listItem.appendChild(deleteButton);
-              savedMosaicsList.appendChild(listItem);
+        if (presetNames.length > 0) {
+          // いずれかのプリセットにモザイクが1つ以上含まれているか
+          if (presetNames.some(name => Array.isArray(presets[name]) && presets[name].length > 0)) {
+            mosaicsExist = true;
+            const activePresetName = mosaicDataContainer.activePreset;
+            if (activePresetName && presets[activePresetName] && presets[activePresetName].length > 0) {
+              displayInfo = `(アクティブ: ${presets[activePresetName].length}個)`;
+            } else {
+              // アクティブなものがないか空なら、存在する最初の0個でないプリセットの情報を出す
+              const firstPopulatedPresetName = presetNames.find(name => presets[name] && presets[name].length > 0);
+              if (firstPopulatedPresetName) {
+                displayInfo = `(${presetNames.length}プリセット, ${presets[firstPopulatedPresetName].length}個等)`;
+              } else {
+                // このケースは mosaicsExist = true の条件から通常到達しないが念のため
+                displayInfo = `(${presetNames.length}プリセット)`;
+              }
+            }
           }
+        }
+      } else if (Array.isArray(mosaicDataContainer)) {
+        // 古いデータ構造
+        if (mosaicDataContainer.length > 0) {
+          mosaicsExist = true;
+          displayInfo = `(${mosaicDataContainer.length}個)`;
+        }
+      }
+
+      if (mosaicsExist) {
+          const listItem = document.createElement('li');
+
+          const urlSpan = document.createElement('span');
+          urlSpan.classList.add('url-text');
+          urlSpan.textContent = `${url} ${displayInfo}`;
+          urlSpan.title = url; // ホバーでフルURL表示
+
+          const deleteButton = document.createElement('button');
+          deleteButton.classList.add('delete-button');
+          deleteButton.textContent = '削除';
+          deleteButton.dataset.url = url; // 削除対象のURLをボタンに紐付け
+
+          deleteButton.addEventListener('click', () => {
+            handleDelete(url, listItem);
+          });
+
+          listItem.appendChild(urlSpan);
+          listItem.appendChild(deleteButton);
+          savedMosaicsList.appendChild(listItem);
       }
     });
   });
@@ -172,11 +205,19 @@ function loadSavedMosaics() {
 
 // 削除ボタンがクリックされたときの処理 (全URL対象)
 function handleDelete(url, listItem) {
-    // ★★★ 確認ダイアログを追加 ★★★
     if (!confirm(`${url} に保存された全てのプリセットを削除しますか？`)) {
         return;
     }
-    // ... existing code ...
+    chrome.storage.local.remove(url, () => {
+        if (chrome.runtime.lastError) {
+            console.error("Error removing data for ${url}:", chrome.runtime.lastError);
+            presetMessage.textContent = `${new URL(url).hostname} のデータ削除に失敗しました。`;
+        } else {
+            console.log(`Data for ${url} removed.`);
+            presetMessage.textContent = ''; // エラーメッセージをクリア
+            loadSavedMosaics(); // リストを再読み込みして表示を更新
+        }
+    });
 }
 
 

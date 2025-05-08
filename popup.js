@@ -11,7 +11,7 @@ const saveCurrentButton = document.getElementById('save-current-button');
 const presetMessage = document.getElementById('preset-message');
 // const addPresetButton = document.getElementById('add-preset-button');
 
-let currentTabUrl = null; // 現在のタブのURLを保持
+let currentTabStorageKey = null; // ★★★ 現在のタブで使用するストレージキー ★★★
 let isLoadingPresets = false; // プリセット読み込み中のフラグ
 
 // --- 初期処理 ---
@@ -31,18 +31,38 @@ async function initializePresetUI() {
 
     try {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tabs[0] && tabs[0].url && (tabs[0].url.startsWith('http://') || tabs[0].url.startsWith('https://'))) {
-            currentTabUrl = tabs[0].url;
-            await loadPresetsForCurrentTab(); // プリセットを読み込んで表示
-            presetControls.style.display = 'block'; // UI表示
-            presetMessage.textContent = ''; // メッセージクリア
+        if (tabs[0] && tabs[0].id && tabs[0].url && (tabs[0].url.startsWith('http://') || tabs[0].url.startsWith('https://'))) {
+            // currentTabUrl = tabs[0].url; // 古いロジック
+            // content.jsに現在のストレージキーを問い合わせる
+            try {
+                const response = await chrome.tabs.sendMessage(tabs[0].id, { action: "getMyStorageKey" });
+                if (response && response.storageKey) {
+                    currentTabStorageKey = response.storageKey;
+                    console.log("Received storageKey from content.js:", currentTabStorageKey);
+                    await loadPresetsForCurrentTab(); // プリセットを読み込んで表示
+                    presetControls.style.display = 'block'; // UI表示
+                    presetMessage.textContent = ''; // メッセージクリア
+                } else {
+                    console.error("Failed to get storageKey from content.js or invalid response:", response);
+                    currentTabStorageKey = null;
+                    presetMessage.textContent = '現在のタブの情報を取得できませんでした。ページを再読み込みしてみてください。';
+                }
+            } catch (e) {
+                console.error("Error sending getMyStorageKey to content.js:", e);
+                currentTabStorageKey = null;
+                if (e.message.includes("Could not establish connection") || e.message.includes("Receiving end does not exist")) {
+                    presetMessage.textContent = 'ページ内のスクリプトに接続できません。ページをリロードするか、拡張機能の権限を確認してください。';
+                } else {
+                    presetMessage.textContent = '現在のタブの情報取得中にエラーが発生しました。';
+                }
+            }
         } else {
-            currentTabUrl = null;
+            currentTabStorageKey = null;
             presetMessage.textContent = '現在のタブではプリセットを利用できません。';
         }
     } catch (error) {
         console.error('Error initializing preset UI:', error);
-        currentTabUrl = null;
+        currentTabStorageKey = null;
         presetMessage.textContent = 'プリセットUIの初期化に失敗しました。';
     } finally {
         isLoadingPresets = false;
@@ -51,15 +71,15 @@ async function initializePresetUI() {
 
 // ★★★ 現在のタブのプリセットを読み込み、Select要素を更新する関数 ★★★
 async function loadPresetsForCurrentTab() {
-    if (!currentTabUrl) return;
+    if (!currentTabStorageKey) return;
 
     presetSelect.innerHTML = ''; // Selectをクリア
     presetSelect.disabled = true; // 読み込み中は無効化
     deletePresetButton.disabled = true;
 
     try {
-        const data = await chrome.storage.local.get(currentTabUrl);
-        const storageData = data[currentTabUrl];
+        const data = await chrome.storage.local.get(currentTabStorageKey);
+        const storageData = data[currentTabStorageKey];
 
         let activePresetName = 'デフォルト';
         let presets = { 'デフォルト': [] }; // デフォルト構造
@@ -67,35 +87,25 @@ async function loadPresetsForCurrentTab() {
         if (storageData && typeof storageData === 'object' && storageData.presets) {
             presets = storageData.presets;
             activePresetName = storageData.activePreset || Object.keys(presets)[0] || 'デフォルト';
-            // プリセットが空の場合の処理
-             if (Object.keys(presets).length === 0) {
+            if (Object.keys(presets).length === 0) {
                 presets = { 'デフォルト': [] };
                 activePresetName = 'デフォルト';
-                // ストレージも更新しておく (content.jsの移行処理に任せても良い)
-                 // await chrome.storage.local.set({ [currentTabUrl]: { activePreset: activePresetName, presets: presets } });
             } else {
-                // アクティブプリセットが存在しない場合（削除されたなど）は最初のものを選択状態にする
                 if (!presets[activePresetName]) {
                     activePresetName = Object.keys(presets)[0];
-                    // 必要であればストレージも更新 (content.jsで行われるはず)
-                    // await updateActivePresetInStorage(currentTabUrl, activePresetName);
                 }
             }
         } else if (Array.isArray(storageData)) {
-            // 古いデータ構造の場合 (移行はcontent.jsが行う前提)
              presets = { 'デフォルト': storageData };
              activePresetName = 'デフォルト';
-        } // データがない場合はデフォルト
+        } 
 
         const presetNames = Object.keys(presets);
         if (presetNames.length === 0) {
-             // 念のため、もし空ならデフォルトを作成
              presetNames.push('デフォルト');
              presets['デフォルト'] = [];
              activePresetName = 'デフォルト';
-             // await chrome.storage.local.set({ [currentTabUrl]: { activePreset: activePresetName, presets: presets } });
         }
-
 
         presetNames.forEach(name => {
             const option = document.createElement('option');
@@ -111,9 +121,8 @@ async function loadPresetsForCurrentTab() {
         updateDeleteButtonState(); // 削除ボタンの状態更新
 
     } catch (error) {
-        console.error(`Error loading presets for ${currentTabUrl}:`, error);
+        console.error(`Error loading presets for key ${currentTabStorageKey}:`, error);
         presetMessage.textContent = 'プリセットの読み込みに失敗しました。';
-        // エラー時も最低限のデフォルト表示を試みる
         presetSelect.innerHTML = '<option value="デフォルト">デフォルト</option>';
         presetSelect.disabled = true;
         deletePresetButton.disabled = true;
@@ -131,18 +140,24 @@ function loadSavedMosaics() {
     // リストをクリア
     savedMosaicsList.innerHTML = '';
 
-    const urls = Object.keys(items).filter(url => url.startsWith('http://') || url.startsWith('https://'));
+    // const urls = Object.keys(items).filter(url => url.startsWith('http://') || url.startsWith('https://'));
+    const storageKeys = Object.keys(items).filter(key =>
+        key.startsWith('http://') ||
+        key.startsWith('https://') ||
+        key.startsWith('youtube.com/channel/') ||
+        key.startsWith('youtube.com/@')
+    );
 
 
-    if (urls.length === 0) {
+    if (storageKeys.length === 0) {
         noSavedDataElement.style.display = 'block'; // データがないメッセージを表示
         return;
     } else {
         noSavedDataElement.style.display = 'none'; // データがあるのでメッセージを隠す
     }
 
-    urls.forEach((url) => {
-      const mosaicDataContainer = items[url];
+    storageKeys.forEach((key) => {
+      const mosaicDataContainer = items[key];
       let displayInfo = "";
       let mosaicsExist = false;
 
@@ -183,16 +198,28 @@ function loadSavedMosaics() {
 
           const urlSpan = document.createElement('span');
           urlSpan.classList.add('url-text');
-          urlSpan.textContent = `${url} ${displayInfo}`;
-          urlSpan.title = url; // ホバーでフルURL表示
+          
+          let displayKeyText = key;
+          if (key.startsWith('youtube.com/channel/')) {
+              displayKeyText = `YouTubeチャンネル (ID: ${key.substring('youtube.com/channel/'.length)})`;
+          } else if (key.startsWith('youtube.com/@')) {
+              displayKeyText = `YouTubeチャンネル (${key.substring('youtube.com/'.length)})`;
+          } else {
+              try {
+                  const u = new URL(key);
+                  displayKeyText = u.hostname + (u.pathname.length > 1 && u.pathname !== '/' ? u.pathname.substring(0,20)+'...' : '');
+              } catch (e) { /* use key as is if URL parsing fails */ }
+          }
+          urlSpan.textContent = `${displayKeyText} ${displayInfo}`;
+          urlSpan.title = key; // ホバーでフルキー表示
 
           const deleteButton = document.createElement('button');
           deleteButton.classList.add('delete-button');
           deleteButton.textContent = '削除';
-          deleteButton.dataset.url = url; // 削除対象のURLをボタンに紐付け
+          deleteButton.dataset.storageKey = key; // ★★★ 削除対象のキーをボタンに紐付け ★★★
 
-          deleteButton.addEventListener('click', () => {
-            handleDelete(url, listItem);
+          deleteButton.addEventListener('click', (e) => {
+            handleDelete(e.target.dataset.storageKey, listItem);
           });
 
           listItem.appendChild(urlSpan);
@@ -204,28 +231,39 @@ function loadSavedMosaics() {
 }
 
 // 削除ボタンがクリックされたときの処理 (全URL対象)
-function handleDelete(url, listItem) {
-    if (!confirm(`${url} に保存された全てのプリセットを削除しますか？`)) {
+function handleDelete(storageKey, listItem) { // ★★★ 引数を storageKey に変更 ★★★
+    let confirmMessageKeyText = storageKey;
+    if (storageKey.startsWith('youtube.com/channel/')) {
+        confirmMessageKeyText = `YouTubeチャンネル (ID: ${storageKey.substring('youtube.com/channel/'.length)})`;
+    } else if (storageKey.startsWith('youtube.com/@')) {
+        confirmMessageKeyText = `YouTubeチャンネル (${storageKey.substring('youtube.com/'.length)})`;
+    } else {
+        try { confirmMessageKeyText = new URL(storageKey).hostname; } catch(e){}
+    }
+
+    if (!confirm(`${confirmMessageKeyText} に保存された全てのプリセットを削除しますか？`)) {
         return;
     }
-    chrome.storage.local.remove(url, async () => {
+    chrome.storage.local.remove(storageKey, async () => {
         if (chrome.runtime.lastError) {
-            console.error(`Error removing data for ${url}:`, chrome.runtime.lastError);
-            presetMessage.textContent = `${new URL(url).hostname} のデータ削除に失敗しました。`;
+            console.error(`Error removing data for ${storageKey}:`, chrome.runtime.lastError);
+            presetMessage.textContent = `${confirmMessageKeyText} のデータ削除に失敗しました。`;
         } else {
-            console.log(`Data for ${url} removed.`);
+            console.log(`Data for ${storageKey} removed.`);
             presetMessage.textContent = ''; // エラーメッセージをクリア
             loadSavedMosaics(); // リストを再読み込みして表示を更新
-
-            // ★★★ 現在のタブが削除されたURLと一致する場合、モザイクをクリアするメッセージを送信 ★★★
-            try {
-                const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-                if (tabs[0] && tabs[0].url === url && tabs[0].id) {
-                    await chrome.tabs.sendMessage(tabs[0].id, { action: "clearMosaicsIfMatch", url: url });
-                    console.log(`Sent clearMosaicsIfMatch message to content script for ${url}`);
+            // ★★★ 現在のタブが削除されたキーと一致する場合、content.jsにモザイククリアを指示 ★★★
+            // content.js側が自身のキーと比較するため、削除されたstorageKeyを渡す
+            if (currentTabStorageKey === storageKey) { // ポップアップが知っている現在のキーと一致したら
+                try {
+                    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+                    if (tabs[0] && tabs[0].id) {
+                        await chrome.tabs.sendMessage(tabs[0].id, { action: "clearMosaicsIfMatch", url: storageKey }); // urlパラメータにキーを渡す
+                        console.log(`Sent clearMosaicsIfMatch message to content script for key ${storageKey}`);
+                    }
+                } catch (error) {
+                    console.error("Error sending clearMosaicsIfMatch message:", error);
                 }
-            } catch (error) {
-                console.error("Error sending clearMosaicsIfMatch message:", error);
             }
         }
     });
@@ -251,7 +289,7 @@ toggleSwitch.addEventListener('change', () => {
 
 // ★★★ プリセット選択変更時の処理 ★★★
 presetSelect.addEventListener('change', async () => {
-    if (!currentTabUrl || presetSelect.disabled) return;
+    if (!currentTabStorageKey || presetSelect.disabled) return;
     const selectedPresetName = presetSelect.value;
     presetMessage.textContent = `プリセット「${selectedPresetName}」を読み込み中...`;
     presetSelect.disabled = true; // 処理中は無効化
@@ -301,10 +339,21 @@ presetSelect.addEventListener('change', async () => {
 
 // ★★★ プリセット削除ボタンの処理 ★★★
 deletePresetButton.addEventListener('click', async () => {
-    if (!currentTabUrl || presetSelect.options.length <= 1 || deletePresetButton.disabled) return;
+    if (!currentTabStorageKey || presetSelect.options.length <= 1 || deletePresetButton.disabled) return;
 
     const presetNameToDelete = presetSelect.value;
-    if (!confirm(`現在のタブ(${new URL(currentTabUrl).hostname})のプリセット「${presetNameToDelete}」を削除しますか？`)) {
+    let keyIdentifier = currentTabStorageKey;
+    try { keyIdentifier = new URL(currentTabStorageKey).hostname; } catch(e) {}
+    if (currentTabStorageKey.startsWith('youtube.com/')) {
+        keyIdentifier = currentTabStorageKey.substring('youtube.com/'.length);
+        if (keyIdentifier.startsWith('channel/')) {
+            keyIdentifier = `チャンネルID: ${keyIdentifier.substring('channel/'.length)}`;
+        } else {
+            keyIdentifier = `チャンネル: ${keyIdentifier}`;
+        }
+    }
+
+    if (!confirm(`現在のタブ(${keyIdentifier})のプリセット「${presetNameToDelete}」を削除しますか？`)) {
         return;
     }
 
@@ -313,38 +362,33 @@ deletePresetButton.addEventListener('click', async () => {
     deletePresetButton.disabled = true;
 
     try {
-        const data = await chrome.storage.local.get(currentTabUrl);
-        let storageData = data[currentTabUrl];
+        const data = await chrome.storage.local.get(currentTabStorageKey);
+        let storageData = data[currentTabStorageKey];
 
         if (storageData && typeof storageData === 'object' && storageData.presets) {
             if (storageData.presets[presetNameToDelete]) {
                 delete storageData.presets[presetNameToDelete]; // プリセットを削除
-                console.log(`Preset "${presetNameToDelete}" deleted locally for ${currentTabUrl}`);
+                console.log(`Preset "${presetNameToDelete}" deleted locally for ${currentTabStorageKey}`);
 
                 let newActivePresetName = storageData.activePreset;
-                // もし削除したのがアクティブなプリセットだったら、残りの最初のプリセットをアクティブにする
                 if (storageData.activePreset === presetNameToDelete) {
                     const remainingPresets = Object.keys(storageData.presets);
                     newActivePresetName = remainingPresets.length > 0 ? remainingPresets[0] : 'デフォルト';
-                     // もし残りプリセットがない場合は、デフォルトを作成
                      if (remainingPresets.length === 0) {
                          storageData.presets['デフォルト'] = [];
                          newActivePresetName = 'デフォルト';
                          console.log("Last preset deleted, created default preset.");
                      }
-                    storageData.activePreset = newActivePresetName; // 新しいアクティブプリセットを設定
+                    storageData.activePreset = newActivePresetName; 
                     console.log(`Active preset changed to "${newActivePresetName}"`);
                 }
 
-                // 更新されたデータをストレージに保存
-                await chrome.storage.local.set({ [currentTabUrl]: storageData });
-                console.log(`Storage updated after deleting preset for ${currentTabUrl}`);
+                await chrome.storage.local.set({ [currentTabStorageKey]: storageData });
+                console.log(`Storage updated after deleting preset for ${currentTabStorageKey}`);
                 presetMessage.textContent = `プリセット「${presetNameToDelete}」を削除しました。`;
 
-                // UIを更新
-                await loadPresetsForCurrentTab(); // これで select の表示と delete ボタン状態が更新される
+                await loadPresetsForCurrentTab();
 
-                // content scriptにも新しいアクティブプリセットをロードさせる (activePresetが変わった場合のみ)
                 if (storageData.activePreset === newActivePresetName) {
                     console.log("Sending switchPreset to content script with new active preset:", newActivePresetName);
                     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -380,7 +424,7 @@ deletePresetButton.addEventListener('click', async () => {
 
 // ★★★ 現在のモザイクを新しいプリセットとして保存するボタンの処理 ★★★
 saveCurrentButton.addEventListener('click', async () => {
-    if (!currentTabUrl) return;
+    if (!currentTabStorageKey) return;
     const newPresetName = newPresetNameInput.value.trim();
     if (!newPresetName) {
         presetMessage.textContent = 'プリセット名を入力してください。';
@@ -420,8 +464,8 @@ saveCurrentButton.addEventListener('click', async () => {
         }
 
         // 2. ストレージデータを取得して更新
-        const data = await chrome.storage.local.get(currentTabUrl);
-        let storageData = data[currentTabUrl];
+        const data = await chrome.storage.local.get(currentTabStorageKey);
+        let storageData = data[currentTabStorageKey];
 
         let presets = {};
         let currentActivePreset = 'デフォルト';
@@ -457,8 +501,8 @@ saveCurrentButton.addEventListener('click', async () => {
         storageData.activePreset = newPresetName;
 
         // 3. ストレージに保存
-        await chrome.storage.local.set({ [currentTabUrl]: storageData });
-        console.log(`Saved current mosaics as ${isExistingPreset ? 'overwritten' : 'new'} preset "${newPresetName}" for ${currentTabUrl}`);
+        await chrome.storage.local.set({ [currentTabStorageKey]: storageData });
+        console.log(`Saved current mosaics as ${isExistingPreset ? 'overwritten' : 'new'} preset "${newPresetName}" for ${currentTabStorageKey}`);
         presetMessage.textContent = `現在のモザイクを「${newPresetName}」として${isExistingPreset ? '上書き保存' : '保存'}しました。`;
         newPresetNameInput.value = ''; // 入力欄をクリア
 

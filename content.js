@@ -28,11 +28,134 @@ function generateUUID() {
   });
 }
 
+// YouTubeページからチャンネル情報を抽出する試み
+function getChannelInfoFromYouTubePage() {
+    // チャンネルページのURL形式の例:
+    // https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxx
+    // https://www.youtube.com/@channelName
+    // 動画ページのメタタグやリンクからチャンネルURLを探す
+
+    // 1. メタタグから (例: <meta itemprop="channelId" content="UC...">)
+    const metaChannelId = document.querySelector('meta[itemprop="channelId"]');
+    if (metaChannelId && metaChannelId.content) {
+        return { type: 'id', value: metaChannelId.content };
+    }
+
+    // 2. JSON-LD scriptタグから
+    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of scripts) {
+        try {
+            const data = JSON.parse(script.textContent);
+            if (data['@type'] === 'VideoObject' && data.author && data.author.identifier) {
+                return { type: 'id', value: data.author.identifier };
+            }
+            if (data['@type'] === 'WebPage' && data.author && data.author.url && data.author.url.includes('/channel/')) {
+                const match = data.author.url.match(/\/channel\/([^/?]+)/);
+                if (match && match[1]) return { type: 'id', value: match[1] };
+            }
+        } catch (e) { /* JSON parse error, ignore */ }
+    }
+
+    // 3. カノニカルリンクからチャンネルURLを探す
+    const canonicalLink = document.querySelector('link[rel="canonical"]');
+    if (canonicalLink && canonicalLink.href) {
+        const urlStr = canonicalLink.href;
+        if (urlStr.includes('/@')) {
+            const match = urlStr.match(/youtube\.com\/(@[^/?]+)/);
+            if (match && match[1]) return { type: 'handle', value: match[1] };
+        } else if (urlStr.includes('/channel/')) {
+            const match = urlStr.match(/youtube\.com\/channel\/([^/?]+)/);
+            if (match && match[1]) return { type: 'id', value: match[1] };
+        }
+    }
+
+    // 4. ytd-video-owner-renderer 要素の href から (動画ページ)
+    const ownerElement = document.querySelector('ytd-video-owner-renderer a#avatar-btn, ytd-video-owner-renderer a.yt-simple-endpoint');
+    if (ownerElement && ownerElement.href) {
+        const href = ownerElement.href;
+        if (href.includes('/@')) {
+            const match = href.match(/youtube\.com\/(@[^/?]+)/);
+            if (match && match[1]) return { type: 'handle', value: match[1] };
+        } else if (href.includes('/channel/')) {
+            const match = href.match(/youtube\.com\/channel\/([^/?]+)/);
+            if (match && match[1]) return { type: 'id', value: match[1] };
+        }
+    }
+    
+    // 5. 現在のページのURLから直接取得 (チャンネルページ自体の場合)
+    if (window.location.hostname.includes('youtube.com')) {
+        if (window.location.pathname.startsWith('/channel/')) {
+            const parts = window.location.pathname.split('/');
+            if (parts.length > 2 && parts[2]) {
+                return { type: 'id', value: parts[2] };
+            }
+        } else if (window.location.pathname.startsWith('/@')) {
+            const parts = window.location.pathname.split('/');
+            if (parts.length > 1 && parts[1]) {
+                return { type: 'handle', value: parts[1] }; // @を含むハンドル名
+            }
+        }
+    }
+    return null;
+}
+
+// 指定されたURLに基づいてストレージキーを決定する
+function getStorageKeyForUrl(urlString) { // urlString は service-worker が検知した、遷移先のURL
+    try {
+        const targetUrl = new URL(urlString);
+        // YouTubeの動画ページ(/watch)であっても、この関数ではチャンネルキーへの変換を積極的に行わない。
+        // DOMにアクセスできないコンテキスト(service-workerからの呼び出し時)での推測は不安定なため。
+        // 実際のチャンネルキーへの変換は、DOMアクセス可能な loadMosaicsFromStorage 関数内で行う。
+        if (targetUrl.hostname === 'www.youtube.com' || targetUrl.hostname === 'youtube.com' || targetUrl.hostname === 'm.youtube.com') {
+            // 例えば、将来的にURL自体にチャンネルIDが含まれるなど、DOM不要で特定できる情報があればここで処理も可能。
+            // 現状では、YouTubeのページであればurlStringをそのまま返す。
+            return urlString;
+        }
+    } catch (e) {
+        console.error("Invalid URL for getStorageKeyForUrl:", urlString, e);
+    }
+    // YouTube以外、または上記で処理されなかった場合は、元のurlStringをキーとして返す
+    return urlString;
+}
+
+// 現在のcontent.jsが実行されているページのストレージキーを取得する
+function getMyStorageKey() {
+    const currentUrl = window.location.href;
+    try {
+        const url = new URL(currentUrl);
+        if (url.hostname === 'www.youtube.com' || url.hostname === 'youtube.com' || url.hostname === 'm.youtube.com') {
+            // ★★★ YouTubeの動画ページ (/watch) の場合のみチャンネルキーを使用 ★★★
+            if (url.pathname.startsWith('/watch')) {
+                const channelInfo = getChannelInfoFromYouTubePage();
+                if (channelInfo) {
+                    if (channelInfo.type === 'id') {
+                        return `youtube.com/channel/${channelInfo.value}`;
+                    } else if (channelInfo.type === 'handle') {
+                        return `youtube.com/${channelInfo.value}`;
+                    }
+                }
+                // チャンネル情報が見つからない/watchページは、フォールバックとしてURL全体を使う
+                console.warn("YouTube /watch page, but channel info not found. Falling back to full URL for key.");
+            } // /watch 以外のYouTubeページ (チャンネルページ等) はそのままURLをキーとする
+        }
+    } catch (e) {
+        console.error("Invalid URL for getMyStorageKey:", currentUrl, e);
+    }
+    return currentUrl; // デフォルトは現在のURL
+}
+
 // --- メッセージリスナー ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "loadMosaics") {
-    console.log("Received loadMosaics request for:", message.url);
-    loadMosaicsFromStorage(message.url);
+    // message.url は service-worker から渡された、そのタブのURL
+    const storageKey = getStorageKeyForUrl(message.url);
+    console.log(`Received loadMosaics request for URL: ${message.url}, using storageKey: ${storageKey}`);
+    loadMosaicsFromStorage(storageKey)
+        .then(() => sendResponse({ success: true }))
+        .catch(e => {
+            console.error("Error in loadMosaicsFromStorage:", e);
+            sendResponse({ success: false, error: e.message });
+        });
     return true; // 非同期応答を示すために true を返す
   } else if (message.type === 'TOGGLE_MOSAIC') {
     // 既存のpopup.jsからのメッセージ処理
@@ -49,33 +172,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         isResizingMosaic = false;
     }
   } else if (message.action === "clearMosaicsIfMatch") { // ★★★ 新しいアクションを処理 ★★★
-    console.log("Received clearMosaicsIfMatch request for:", message.url);
+    // message.url には削除対象となったストレージキーが渡ってくる
+    const keyToDelete = message.url;
+    const currentStorageKey = getMyStorageKey(); // 現在のページのキーと比較
+    console.log(`Received clearMosaicsIfMatch request for key: ${keyToDelete}. Current page key: ${currentStorageKey}`);
     // 現在のページのURLと削除対象のURLが一致するか確認
-    if (message.url === window.location.href) {
-      console.log("URL match found. Clearing mosaics on the current page.");
+    if (keyToDelete === currentStorageKey) {
+      console.log("Storage key match found. Clearing mosaics on the current page.");
       clearAllMosaics(); // モザイクをクリア
     } else {
-      console.log("URL does not match the current page. No mosaics cleared.");
+      console.log("Storage key does not match the current page. No mosaics cleared.");
     }
     // このアクションに対する応答は特に不要なので、true を返さない
   } else if (message.action === "switchPreset") { // ★★★ プリセット切り替え処理を修正 ★★★
-    console.log("Received switchPreset request for:", message.presetName);
+    const storageKey = getMyStorageKey(); // 現在のページのキーで操作
+    console.log(`Received switchPreset request for preset: "${message.presetName}", using storageKey: ${storageKey}`);
     (async () => { // 即時実行非同期関数でラップ
         try {
-            // 最初にプリセットが存在するか確認 (updateActivePreset内でも確認するが念のため)
-            const data = await chrome.storage.local.get(window.location.href);
-            const storageData = data[window.location.href];
+            const data = await chrome.storage.local.get(storageKey);
+            const storageData = data[storageKey];
             if (!storageData?.presets?.[message.presetName]) {
-                 // プリセットが存在しない場合はエラーを投げずに警告を出し、処理を中断する
-                 console.warn(`Preset "${message.presetName}" not found. Switch aborted.`);
+                 console.warn(`Preset "${message.presetName}" not found for key ${storageKey}. Switch aborted.`);
                  sendResponse({ success: false, error: `Preset "${message.presetName}" not found.` });
                  return; // 処理中断
             }
 
             // プリセットが存在すれば更新・読み込み
-            await updateActivePreset(window.location.href, message.presetName);
-            // loadMosaicsFromStorage は内部で activePreset を読むので引数不要
-            await loadMosaicsFromStorage(window.location.href);
+            await updateActivePreset(storageKey, message.presetName); // キーを渡す
+            await loadMosaicsFromStorage(storageKey); // キーを渡す
             sendResponse({ success: true }); // 成功応答
         } catch (error) {
             console.error("Error processing switchPreset:", error);
@@ -88,6 +212,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const currentMosaics = getCurrentMosaicsData();
       sendResponse({ mosaics: currentMosaics });
       return true; // 非同期応答
+  }
+  // ★★★ popup.jsが現在のタブのストレージキーを取得するためのハンドラ ★★★
+  else if (message.action === "getMyStorageKey") {
+      const key = getMyStorageKey();
+      console.log("Received getMyStorageKey request, sending key:", key);
+      sendResponse({ storageKey: key });
+      // sendResponseが同期的に呼ばれる場合、trueを返さなくても良いが、念のため
+      return true;
   }
 });
 
@@ -215,9 +347,9 @@ function applyMosaic(x1, y1, x2, y2) {
   if (width < 5 || height < 5) return; // 小さすぎるモザイクは作成しない
 
   const newMosaicId = generateUUID(); // 新しいIDを生成
-  createMosaicElement(newMosaicId, left, top, width, height); // 新しい関数で要素作成
+  createMosaicElement(newMosaicId, left, top, width, height);
 
-  saveMosaicsToStorage(); // ★★★ 変更を保存 ★★★
+  saveMosaicsToStorage();
 }
 
 // モザイク要素を作成、設定、追加する関数
@@ -481,13 +613,63 @@ function getCurrentMosaicsData() {
 }
 
 // ストレージからモザイク情報を読み込み描画する関数
-async function loadMosaicsFromStorage(url) {
+async function loadMosaicsFromStorage(initialStorageKey) {
+  let storageKey = initialStorageKey;
+  console.log(`loadMosaicsFromStorage: Called with initial key: ${initialStorageKey}`);
+
+  // ★★★ 渡されたキーがYouTubeの動画URLの場合、チャンネルキーへの置き換えを試みる (リトライあり) ★★★
+  try {
+    const initialUrl = new URL(initialStorageKey);
+    if ((initialUrl.hostname === 'www.youtube.com' || initialUrl.hostname === 'youtube.com' || initialUrl.hostname === 'm.youtube.com') && initialUrl.pathname.startsWith('/watch')) {
+      console.log(`loadMosaicsFromStorage: Initial key ${initialStorageKey} is a YouTube /watch page. Attempting to get channel key.`);
+      
+      let channelInfo = getChannelInfoFromYouTubePage(); // 初回試行
+
+      if (!channelInfo) {
+        console.log("loadMosaicsFromStorage: Channel info not found on first attempt. Starting retries...");
+        const maxRetries = 3;
+        const retryDelay = 750; // ミリ秒
+        for (let i = 0; i < maxRetries; i++) {
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          console.log(`loadMosaicsFromStorage: Retrying to get channel info (attempt ${i + 1}/${maxRetries}) for ${initialStorageKey}`);
+          channelInfo = getChannelInfoFromYouTubePage();
+          if (channelInfo) {
+            console.log(`loadMosaicsFromStorage: Channel info found on retry (attempt ${i + 1}).`);
+            break;
+          }
+        }
+      }
+
+      if (channelInfo) {
+        let determinedChannelKey;
+        if (channelInfo.type === 'id') {
+          determinedChannelKey = `youtube.com/channel/${channelInfo.value}`;
+        } else if (channelInfo.type === 'handle') {
+          determinedChannelKey = `youtube.com/${channelInfo.value}`;
+        }
+        if (determinedChannelKey) {
+          console.log(`loadMosaicsFromStorage: Channel key determined: ${determinedChannelKey}. Using this instead of ${initialStorageKey}.`);
+          storageKey = determinedChannelKey; // キーをチャンネル共通キーに置き換え
+        } else {
+          // このケースは channelInfo が真だがキーを形成できなかった場合 (通常は起こらないはず)
+          console.warn(`loadMosaicsFromStorage: Channel info was present but failed to form a key. Using initial key: ${initialStorageKey}`);
+        }
+      } else {
+        console.warn(`loadMosaicsFromStorage: Channel info NOT found after retries for ${initialStorageKey}. Using initial key (full URL).`);
+      }
+    }
+  } catch (e) {
+    // initialStorageKey が不正なURLだった場合など。そのまま進む。
+    console.warn(`loadMosaicsFromStorage: Error processing initial key ${initialStorageKey} for potential channel key replacement.`, e);
+  }
+  // ★★★ ここまでがキー置き換え処理 ★★★
+
   clearAllMosaics(); // まず既存のモザイクをクリア
 
   try {
-    const data = await chrome.storage.local.get(url);
-    const storageData = data[url]; // URLに対応するモザイク情報の配列 or オブジェクト
-    console.log("Loaded storage data for", url, ":", storageData);
+    const data = await chrome.storage.local.get(storageKey);
+    const storageData = data[storageKey]; 
+    console.log("Loaded storage data for key", storageKey, ":", storageData);
 
     // --- データ構造の判定と移行 ---
     let activePresetName = 'デフォルト'; // デフォルトのプリセット名
@@ -507,38 +689,38 @@ async function loadMosaicsFromStorage(url) {
                 // activePresetを更新する必要があるかもしれないが、ここでは読み込みのみ
                 console.warn(`Active preset "${storageData.activePreset}" not found. Using "${activePresetName}" instead.`);
                  // ストレージの activePreset も更新しておく
-                await updateActivePreset(url, activePresetName);
+                await updateActivePreset(storageKey, activePresetName);
             } else {
                 // 利用可能なプリセットもない場合、デフォルトを作成
                 activePresetName = 'デフォルト';
                 presets = { [activePresetName]: [] };
                 // 新しいデフォルト状態で保存し直す
-                await chrome.storage.local.set({ [url]: { activePreset: activePresetName, presets: presets } });
-                console.log("No presets found. Created default preset for", url);
+                await chrome.storage.local.set({ [storageKey]: { activePreset: activePresetName, presets: presets } });
+                console.log("No presets found. Created default preset for", storageKey);
             }
         }
 
     } else if (Array.isArray(storageData)) {
         // ★ 古いデータ構造の場合、デフォルトプリセットとして移行
-        console.log("Migrating old data structure for", url);
+        console.log("Migrating old data structure for", storageKey);
         activePresetName = 'デフォルト';
         presets = { [activePresetName]: storageData };
         // 新しい構造で保存し直す
-        await chrome.storage.local.set({ [url]: { activePreset: activePresetName, presets: presets } });
-        console.log("Migrated data saved for", url);
+        await chrome.storage.local.set({ [storageKey]: { activePreset: activePresetName, presets: presets } });
+        console.log("Migrated data saved for", storageKey);
     } else {
          // ★ データが全くない場合、空のデフォルトプリセットを作成して保存
          activePresetName = 'デフォルト';
          presets = { [activePresetName]: [] };
-         await chrome.storage.local.set({ [url]: { activePreset: activePresetName, presets: presets } });
-         console.log("No data found. Created default preset structure for", url);
+         await chrome.storage.local.set({ [storageKey]: { activePreset: activePresetName, presets: presets } });
+         console.log("No data found. Created default preset structure for", storageKey);
     }
     // --- データ構造の判定と移行ここまで ---
 
 
     // 読み込むべきモザイクデータを取得
     const mosaicsToLoad = presets[activePresetName] || [];
-    console.log(`Loading preset: ${activePresetName} for ${url}`, mosaicsToLoad);
+    console.log(`Loading preset: ${activePresetName} for ${storageKey}`, mosaicsToLoad);
 
     if (mosaicsToLoad.length > 0) {
       mosaicsToLoad.forEach(mosaicData => {
@@ -561,13 +743,13 @@ async function loadMosaicsFromStorage(url) {
 
 // 現在のモザイク情報をストレージに保存する関数 (現在のアクティブなプリセットに対して)
 async function saveMosaicsToStorage() {
-  const url = window.location.href;
+  const storageKey = getMyStorageKey();
   // ★★★ mosaicElements 配列からデータを生成 ★★★
   const currentMosaicsData = getCurrentMosaicsData(); // 関数 getCurrentMosaicsData を使う
 
   try {
-    const data = await chrome.storage.local.get(url);
-    let storageData = data[url];
+    const data = await chrome.storage.local.get(storageKey);
+    let storageData = data[storageKey];
 
     // --- 現在のプリセット情報を取得（なければ初期化） ---
     let activePresetName = 'デフォルト';
@@ -605,8 +787,8 @@ async function saveMosaicsToStorage() {
         presets: presets
     };
 
-    await chrome.storage.local.set({ [url]: newData });
-    console.log(`Mosaics saved for ${url} (Preset: ${activePresetName}):`, currentMosaicsData);
+    await chrome.storage.local.set({ [storageKey]: newData });
+    console.log(`Mosaics saved for ${storageKey} (Preset: ${activePresetName}):`, currentMosaicsData);
 
   } catch (error) {
     console.error("Error saving mosaics to storage:", error);
@@ -614,22 +796,22 @@ async function saveMosaicsToStorage() {
 }
 
 // ★★★ activePreset のみを更新するヘルパー関数（popup.jsからの切り替え時に使用）★★★
-async function updateActivePreset(url, presetName) {
+async function updateActivePreset(storageKey, presetName) {
     try {
-        const data = await chrome.storage.local.get(url);
-        let storageData = data[url];
+        const data = await chrome.storage.local.get(storageKey);
+        let storageData = data[storageKey];
         // データが存在し、新しい形式であることを確認
         if (storageData && typeof storageData === 'object' && storageData.presets) {
              // 更新対象のプリセット名が実際に存在することも確認
              if (storageData.presets[presetName]) {
                 storageData.activePreset = presetName;
-                await chrome.storage.local.set({ [url]: storageData });
-                console.log(`Active preset updated to ${presetName} for ${url}`);
+                await chrome.storage.local.set({ [storageKey]: storageData });
+                console.log(`Active preset updated to ${presetName} for ${storageKey}`);
             } else {
-                 console.error(`Cannot update active preset for ${url}: Preset "${presetName}" does not exist.`);
+                 console.error(`Cannot update active preset for ${storageKey}: Preset "${presetName}" does not exist.`);
             }
         } else {
-            console.error(`Cannot update active preset for ${url}: Invalid or non-existent data structure.`);
+            console.error(`Cannot update active preset for ${storageKey}: Invalid or non-existent data structure.`);
             // データ構造がない場合、ここで初期化して設定することも可能だが、
             // 通常は loadMosaicsFromStorage が先に呼ばれて初期化しているはず
         }
@@ -654,13 +836,15 @@ function clearAllMosaics() {
 // loadMosaicsFromStorage内でクリア処理を行っているので大きな問題はない想定
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
     // DOMが既に読み込まれている場合
-    // ★★★ 引数なしで呼び出し ★★★
-    loadMosaicsFromStorage(window.location.href);
+    const initialKey = getMyStorageKey();
+    console.log("Initial load for key (DOM ready):", initialKey);
+    loadMosaicsFromStorage(initialKey);
 } else {
     // DOM読み込み完了を待つ
     document.addEventListener('DOMContentLoaded', () => {
-        // ★★★ 引数なしで呼び出し ★★★
-        loadMosaicsFromStorage(window.location.href);
+        const initialKey = getMyStorageKey();
+        console.log("Initial load for key (DOMContentLoaded):", initialKey);
+        loadMosaicsFromStorage(initialKey);
     });
 }
 
